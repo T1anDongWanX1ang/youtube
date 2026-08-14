@@ -1,0 +1,23 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Python environments and generated files
+.venv/
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local/editor files and runtime output
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# Local safety copies; the active source files are versioned instead.
+*.backup.*
+*.bak
