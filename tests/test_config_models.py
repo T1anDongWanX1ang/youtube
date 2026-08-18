@@ -14,5 +14,6 @@ def test_default_models_are_flash_lite(monkeypatch):
     assert settings.transcription_model == "gemini-2.5-flash-lite"
     assert settings.lookback_days == 1
     assert settings.transcribe_batch_size == 50
-    assert settings.daily_transcribe_limit == 50
+    assert settings.daily_transcribe_limit == 100
+    assert settings.transcribe_max_attempts == 3
     assert GEMINI_MODEL_NAME == "gemini-2.5-flash-lite"

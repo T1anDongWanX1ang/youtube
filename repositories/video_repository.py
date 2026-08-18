@@ -119,7 +119,7 @@ class YouTubeVideoRepository:
         return parsed_rows
 
     async def get_videos_needing_transcription(
-        self, limit: int, lookback_days: int
+        self, limit: int, lookback_days: int, max_attempts: int
     ) -> List[YouTubeVideo]:
         """
         Fetch retryable videos that do not yet have a transcript.
@@ -134,6 +134,7 @@ class YouTubeVideoRepository:
                 v.video_id,
                 v.channel_id,
                 c.title AS channel_title,
+                c.priority AS channel_priority,
                 v.title,
                 v.description,
                 v.published_at,
@@ -148,13 +149,14 @@ class YouTubeVideoRepository:
             LEFT JOIN youtube_crypto_video_transcripts t ON t.video_id = v.video_id
             WHERE v.analysis_status IN ('pending', 'failed')
               AND t.video_id IS NULL
+              AND COALESCE(v.transcription_attempts, 0) < %s
               AND v.published_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
             ORDER BY v.published_at DESC
             LIMIT %s
         """
         async with self.db_pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(sql, (lookback_days, limit))
+                await cur.execute(sql, (max_attempts, lookback_days, limit))
                 rows = await cur.fetchall()
 
         parsed_rows = []
@@ -232,3 +234,40 @@ class YouTubeVideoRepository:
         async with self.db_pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(sql, (video_id,))
+
+    async def record_transcription_failure(
+        self, video_id: str, error: Exception, max_attempts: int
+    ) -> None:
+        """Record a retryable transcription failure and stop after the configured cap."""
+        sql = """
+            UPDATE youtube_crypto_videos
+            SET
+                transcription_attempts = COALESCE(transcription_attempts, 0) + 1,
+                transcription_last_error = %s,
+                transcription_last_failed_at = NOW(),
+                analysis_status = CASE
+                    WHEN COALESCE(transcription_attempts, 0) + 1 >= %s
+                        THEN 'transcription_failed'
+                    ELSE 'failed'
+                END,
+                updated_at = NOW()
+            WHERE video_id = %s
+        """
+        async with self.db_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(sql, (str(error)[:1000], max_attempts, video_id))
+
+    async def mark_skipped_untranscribable(self, video_id: str, reason: str) -> None:
+        """Prevent deterministic Gemini rejections from returning to the retry pool."""
+        sql = """
+            UPDATE youtube_crypto_videos
+            SET
+                analysis_status = 'skipped_untranscribable',
+                transcription_last_error = %s,
+                transcription_last_failed_at = NOW(),
+                updated_at = NOW()
+            WHERE video_id = %s
+        """
+        async with self.db_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(sql, (reason[:1000], video_id))

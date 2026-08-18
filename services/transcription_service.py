@@ -20,6 +20,19 @@ TRANSCRIBE_MAX_OUTPUT_TOKENS = 32768
 TRANSCRIBE_MAX_DIRECT_VIDEO_SECONDS = int(os.getenv("YOUTUBE_TRANSCRIBE_MAX_DIRECT_VIDEO_SECONDS", "5400"))
 
 
+def _nontranscribable_source(error: Exception) -> Optional[str]:
+    """Return a terminal skip source for Gemini errors that cannot succeed on retry."""
+    message = str(error).upper()
+    if "RECITATION" in message:
+        return "gemini_skipped_recitation"
+    if (
+        ("1,048,576" in message or "1048576" in message)
+        and any(marker in message for marker in ("TOKEN", "INPUT", "CONTEXT"))
+    ):
+        return "gemini_skipped_input_too_large"
+    return None
+
+
 def _fmt_ts(seconds: int) -> str:
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
@@ -100,14 +113,47 @@ class TranscriptionService:
                     "Continue verbatim from there; do not repeat earlier content."
                 )
 
-            text, usage = generate_from_video(
-                api_key=self.settings.youtube_gemini_api_key,
-                model=model,
-                video_url=video_url,
-                prompt=prompt,
-                max_output_tokens=TRANSCRIBE_MAX_OUTPUT_TOKENS,
-                base_url=getattr(self.settings, "gemini_base_url", None),
-            )
+            try:
+                text, usage = generate_from_video(
+                    api_key=self.settings.youtube_gemini_api_key,
+                    model=model,
+                    video_url=video_url,
+                    prompt=prompt,
+                    max_output_tokens=TRANSCRIBE_MAX_OUTPUT_TOKENS,
+                    base_url=getattr(self.settings, "gemini_base_url", None),
+                )
+            except Exception as exc:
+                skip_source = _nontranscribable_source(exc)
+                if skip_source is None:
+                    raise
+
+                elapsed = time.perf_counter() - start_time
+                coverage = compute_coverage(segments, duration, MIN_COVERAGE_RATIO)
+                full_text = "\n".join(
+                    f"[{_fmt_ts(segment['start'])}] {segment['text']}"
+                    for segment in segments
+                )
+                logger.warning(
+                    "Skipping non-transcribable video_id=%s source=%s error=%s",
+                    video.video_id,
+                    skip_source,
+                    exc,
+                )
+                return VideoTranscript(
+                    video_id=video.video_id,
+                    full_text=full_text,
+                    language=language,
+                    source=skip_source,
+                    segments=segments,
+                    word_count=coverage["word_count"],
+                    duration_covered_sec=coverage["duration_covered_sec"],
+                    ok=False,
+                    model_name=model,
+                    prompt_token_count=prompt_tokens or None,
+                    candidates_token_count=cand_tokens or None,
+                    total_token_count=total_tokens or None,
+                    elapsed_seconds=elapsed,
+                )
 
             if attempt == 0:
                 language = _extract_language(text)
@@ -121,7 +167,8 @@ class TranscriptionService:
             segments.extend(new_segments)
 
             coverage = compute_coverage(segments, duration, MIN_COVERAGE_RATIO)
-            if coverage["ok"]:
+            hit_output_limit = bool(usage and usage.get("finishReason") == "MAX_TOKENS")
+            if coverage["ok"] and not hit_output_limit:
                 break
             if coverage["duration_covered_sec"] <= last_covered:
                 break

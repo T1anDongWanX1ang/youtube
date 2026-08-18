@@ -8,7 +8,13 @@ from youtube_crypto.services.video_value_filter import (
 )
 
 
-def _video(title: str, *, description: str = "", duration: int = 900) -> YouTubeVideo:
+def _video(
+    title: str,
+    *,
+    description: str = "",
+    duration: int = 900,
+    channel_priority: int | None = None,
+) -> YouTubeVideo:
     return YouTubeVideo(
         video_id=title.lower().replace(" ", "-")[:40],
         channel_id="c",
@@ -17,6 +23,7 @@ def _video(title: str, *, description: str = "", duration: int = 900) -> YouTube
         published_at=datetime(2026, 6, 23, tzinfo=timezone.utc),
         duration_seconds=duration,
         view_count=1000,
+        channel_priority=channel_priority,
     )
 
 
@@ -96,8 +103,19 @@ def test_selects_with_category_quotas_for_daily_top50_shape():
 
     assert len(selected) == 10
     assert counts == {
-        "politics_geopolitics": 4,
+        "politics_geopolitics": 5,
         "macro_market": 3,
         "business_tech": 2,
-        "crypto": 1,
     }
+
+
+def test_high_priority_kol_hot_event_commentary_is_boosted():
+    low_priority = score_video_for_analysis(
+        _video("Iran Israel ceasefire sanctions and oil markets update", channel_priority=0)
+    )
+    kol = score_video_for_analysis(
+        _video("Iran Israel ceasefire sanctions and oil markets update", channel_priority=15)
+    )
+
+    assert kol.score > low_priority.score
+    assert "high_priority_kol_hot_event" in kol.reason

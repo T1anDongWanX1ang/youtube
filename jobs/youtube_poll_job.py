@@ -239,6 +239,7 @@ async def run_polling_iteration() -> None:
     candidate_videos = await video_repo.get_videos_needing_transcription(
         limit=settings.transcribe_batch_size * settings.transcribe_candidate_pool_multiplier,
         lookback_days=settings.lookback_days,
+        max_attempts=settings.transcribe_max_attempts,
     )
     processed_today = await video_repo.count_transcripts_created_today()
     remaining_capacity = _remaining_transcription_capacity(
@@ -286,6 +287,17 @@ async def run_polling_iteration() -> None:
         try:
             transcript = transcription_service.transcribe(video)
             await transcript_repo.upsert_transcript(transcript)
+            if transcript.source.startswith("gemini_skipped_"):
+                await video_repo.mark_skipped_untranscribable(
+                    video.video_id,
+                    transcript.source,
+                )
+                logger.info(
+                    "Marked video_id=%s as untranscribable source=%s",
+                    video.video_id,
+                    transcript.source,
+                )
+                continue
             logger.info(
                 "Transcribed video_id=%s score=%s reason=%s ok=%s covered=%ss words=%s",
                 video.video_id,
@@ -295,8 +307,13 @@ async def run_polling_iteration() -> None:
                 transcript.duration_covered_sec,
                 transcript.word_count,
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("Transcription failed for video_id=%s", video.video_id)
+            await video_repo.record_transcription_failure(
+                video.video_id,
+                exc,
+                settings.transcribe_max_attempts,
+            )
 
     # Phase 2: Run claim-level analysis for pending videos that have a complete transcript.
     # Analysis reads the stored transcript text (no second video watch, no router pass).

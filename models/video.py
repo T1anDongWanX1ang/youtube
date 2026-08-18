@@ -12,6 +12,7 @@ class YouTubeVideo(BaseModel):
     video_id: str
     channel_id: str
     channel_title: Optional[str] = None
+    channel_priority: Optional[int] = None
     title: str
     description: Optional[str] = None
     published_at: datetime

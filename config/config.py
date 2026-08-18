@@ -40,7 +40,8 @@ class YouTubeCryptoSettings(BaseSettings):
     transcribe_candidate_pool_multiplier: int = Field(
         default=10, alias="YOUTUBE_TRANSCRIBE_CANDIDATE_POOL_MULTIPLIER"
     )
-    daily_transcribe_limit: int = Field(default=50, alias="YOUTUBE_DAILY_TRANSCRIBE_LIMIT")
+    daily_transcribe_limit: int = Field(default=100, alias="YOUTUBE_DAILY_TRANSCRIBE_LIMIT")
+    transcribe_max_attempts: int = Field(default=3, alias="YOUTUBE_TRANSCRIBE_MAX_ATTEMPTS")
 
     model_config = SettingsConfigDict(
         # Use .env in the youtube_crypto package root

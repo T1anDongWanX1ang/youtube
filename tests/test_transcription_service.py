@@ -57,6 +57,54 @@ def test_transcribe_marks_failed_when_cannot_cover(monkeypatch):
     assert transcript.word_count > 0
 
 
+def test_transcribe_resumes_after_max_tokens_and_keeps_first_chunk(monkeypatch):
+    calls = []
+    responses = [
+        (
+            "LANG: en\n[00:00] first half\n[15:00] still speaking",
+            {"finishReason": "MAX_TOKENS", "totalTokenCount": 10},
+        ),
+        ("[15:30] continued\n[29:10] end", {"totalTokenCount": 5}),
+    ]
+
+    def fake(**kwargs):
+        calls.append(kwargs)
+        return responses[len(calls) - 1]
+
+    monkeypatch.setattr(ts_mod, "generate_from_video", fake)
+
+    transcript = TranscriptionService(settings=_Settings()).transcribe(_video(1800))
+
+    assert transcript.ok is True
+    assert len(calls) == 2
+    assert [segment["start"] for segment in transcript.segments] == [0, 900, 930, 1750]
+    assert "Resume the transcript from [15:00]" in calls[1]["prompt"]
+
+
+def test_transcribe_marks_recitation_as_terminal_skip(monkeypatch):
+    def fake(**kwargs):
+        raise RuntimeError("Gemini finished without STOP: finishReason=RECITATION")
+
+    monkeypatch.setattr(ts_mod, "generate_from_video", fake)
+
+    transcript = TranscriptionService(settings=_Settings()).transcribe(_video())
+
+    assert transcript.ok is False
+    assert transcript.source == "gemini_skipped_recitation"
+
+
+def test_transcribe_marks_oversized_input_as_terminal_skip(monkeypatch):
+    def fake(**kwargs):
+        raise RuntimeError("Gemini HTTP 400: input token count exceeds 1,048,576")
+
+    monkeypatch.setattr(ts_mod, "generate_from_video", fake)
+
+    transcript = TranscriptionService(settings=_Settings()).transcribe(_video())
+
+    assert transcript.ok is False
+    assert transcript.source == "gemini_skipped_input_too_large"
+
+
 def test_transcribe_skips_direct_gemini_for_overlong_video(monkeypatch):
     monkeypatch.setattr(ts_mod, "TRANSCRIBE_MAX_DIRECT_VIDEO_SECONDS", 3600, raising=False)
 

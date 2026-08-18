@@ -7,10 +7,10 @@ from ..models import YouTubeVideo
 Decision = Literal["analyze", "skip"]
 
 DEFAULT_CATEGORY_QUOTA_RATIOS = {
-    "politics_geopolitics": 0.40,
+    "politics_geopolitics": 0.45,
     "macro_market": 0.30,
     "business_tech": 0.20,
-    "crypto": 0.10,
+    "crypto": 0.05,
 }
 
 
@@ -88,6 +88,12 @@ CRYPTO_TERMS = {
     "defi",
     "etf",
 }
+
+# Channel priority is maintained by operators in youtube_crypto_channels.  A high
+# priority channel is treated as a KOL only when it is discussing a current event,
+# rather than receiving a blanket boost for every upload.
+KOL_HOT_EVENT_MIN_CHANNEL_PRIORITY = 10
+KOL_HOT_EVENT_TERMS = MACRO_TERMS | GEOPOLITICS_TERMS
 
 SPORTS_BETTING_TERMS = {
     "mlb betting",
@@ -175,6 +181,7 @@ def score_video_for_analysis(
     category, hit_count = _top_category(text)
     score = 0
     reasons: list[str] = []
+    channel_priority = getattr(video, "channel_priority", None) or 0
 
     if category == "macro_market" and hit_count:
         score = 76
@@ -186,7 +193,7 @@ def score_video_for_analysis(
         score = 62
         reasons.append("business_tech")
     elif category == "crypto" and hit_count:
-        score = 52
+        score = 38
         reasons.append("crypto_lower_priority")
     else:
         score = 20
@@ -204,6 +211,11 @@ def score_video_for_analysis(
     if _count_matches(text, NEWS_WIRE_CHANNEL_TERMS):
         score -= 18
         reasons.append("news_wire_channel")
+
+    hot_event_hits = _count_matches(text, KOL_HOT_EVENT_TERMS)
+    if channel_priority >= KOL_HOT_EVENT_MIN_CHANNEL_PRIORITY and hot_event_hits:
+        score += min(24, 12 + channel_priority)
+        reasons.append("high_priority_kol_hot_event")
 
     # More direct event/market terms mean a better chance of matching PredX markets.
     extra_hits = (

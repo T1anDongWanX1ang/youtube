@@ -21,3 +21,5 @@ __pycache__/
 # Local safety copies; the active source files are versioned instead.
 *.backup.*
 *.bak
+*.tgz
+*.egg-info/

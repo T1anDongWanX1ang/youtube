@@ -35,7 +35,14 @@ def _generate_endpoint(model: str, key: str, base_url: Optional[str] = None) -> 
     return f"{base}/v1beta/models/{model}:generateContent?key={key}"
 
 
-def _stream_request(url: str, body: dict, max_retries: int, timeout: tuple) -> Tuple[str, Optional[dict]]:
+def _stream_request(
+    url: str,
+    body: dict,
+    max_retries: int,
+    timeout: tuple,
+    *,
+    allow_max_tokens: bool = False,
+) -> Tuple[str, Optional[dict]]:
     """POST a streaming request and accumulate (full_text, usage_metadata)."""
     for attempt in range(max_retries):
         resp = requests.post(url, json=body, timeout=timeout, stream=True)
@@ -72,6 +79,12 @@ def _stream_request(url: str, body: dict, max_retries: int, timeout: tuple) -> T
             if chunk.get("usageMetadata"):
                 usage = chunk["usageMetadata"]
         if "MAX_TOKENS" in finish_reasons:
+            if allow_max_tokens:
+                # A transcript can continue from its final timestamp, so preserve the
+                # streamed text instead of discarding it as an exception.
+                usage = dict(usage or {})
+                usage["finishReason"] = "MAX_TOKENS"
+                return "".join(text_parts), usage
             total = usage.get("totalTokenCount") if usage else None
             raise RuntimeError(f"Gemini output truncated: finishReason=MAX_TOKENS total_tokens={total}")
         if not finish_reasons:
@@ -164,7 +177,13 @@ def generate_from_video(
             "temperature": temperature,
         },
     }
-    return _stream_request(url, body, max_retries, (connect_timeout, read_timeout))
+    return _stream_request(
+        url,
+        body,
+        max_retries,
+        (connect_timeout, read_timeout),
+        allow_max_tokens=True,
+    )
 
 
 def generate_text(

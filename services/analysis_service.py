@@ -326,7 +326,7 @@ class VideoAnalysisService:
                     temperature=0.1,
                     base_url=getattr(self.settings, "gemini_base_url", None),
                     response_mime_type="application/json",
-                    response_schema=None,
+                    response_schema=CLAIM_ANALYSIS_RESPONSE_SCHEMA,
                 )
             except Exception:
                 logger.exception(
