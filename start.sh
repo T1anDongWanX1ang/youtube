@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Start both long-running components: the polling worker and the on-demand API.
-# Run from the repository root with: ./start.sh
+# Start both long-running components in the background.
+# Usage: ./start.sh {start|stop|restart|status}
 
 set -Eeuo pipefail
 
@@ -35,6 +35,8 @@ export PYTHONUNBUFFERED=1
 mkdir -p logs
 WEB_HOST="${YOUTUBE_WEB_HOST:-0.0.0.0}"
 WEB_PORT="${YOUTUBE_WEB_PORT:-8000}"
+WORKER_PID_FILE="logs/polling.pid"
+API_PID_FILE="logs/api.pid"
 
 # Creates .venv when absent and installs the dependency versions pinned in uv.lock.
 uv sync --frozen
@@ -46,24 +48,68 @@ if [[ ! -x "$PYTHON_BIN" || ! -x "$UVICORN_BIN" ]]; then
   exit 1
 fi
 
-echo "Starting polling worker..."
-"$PYTHON_BIN" -m youtube_crypto >logs/polling.log 2>&1 &
-POLL_PID=$!
-
-echo "Starting API at http://${WEB_HOST}:${WEB_PORT}..."
-"$UVICORN_BIN" youtube_crypto.web.app:app --host "$WEB_HOST" --port "$WEB_PORT" \
-  >logs/api.log 2>&1 &
-API_PID=$!
-
-shutdown() {
-  trap - INT TERM EXIT
-  echo "Stopping polling worker and API..."
-  kill "$POLL_PID" "$API_PID" 2>/dev/null || true
-  wait "$POLL_PID" "$API_PID" 2>/dev/null || true
+is_running() {
+  local pid_file="$1"
+  [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null
 }
 
-trap shutdown INT TERM EXIT
+start_process() {
+  local name="$1"
+  local pid_file="$2"
+  local log_file="$3"
+  shift 3
 
-# If either service exits, stop the other one and return the failing status.
-wait -n "$POLL_PID" "$API_PID"
-exit $?
+  if is_running "$pid_file"; then
+    echo "$name is already running: pid=$(cat "$pid_file")"
+    return
+  fi
+  rm -f "$pid_file"
+  nohup "$@" >>"$log_file" 2>&1 </dev/null &
+  echo $! >"$pid_file"
+  echo "Started $name in background: pid=$(cat "$pid_file") log=$log_file"
+}
+
+stop_process() {
+  local name="$1"
+  local pid_file="$2"
+  if is_running "$pid_file"; then
+    kill "$(cat "$pid_file")"
+    echo "Stopped $name: pid=$(cat "$pid_file")"
+  else
+    echo "$name is not running"
+  fi
+  rm -f "$pid_file"
+}
+
+start() {
+  start_process "polling worker" "$WORKER_PID_FILE" "logs/polling.log" \
+    "$PYTHON_BIN" -m youtube_crypto
+  start_process "API" "$API_PID_FILE" "logs/api.log" \
+    "$UVICORN_BIN" youtube_crypto.web.app:app --host "$WEB_HOST" --port "$WEB_PORT"
+}
+
+stop() {
+  stop_process "polling worker" "$WORKER_PID_FILE"
+  stop_process "API" "$API_PID_FILE"
+}
+
+status() {
+  if is_running "$WORKER_PID_FILE"; then
+    echo "polling worker: running pid=$(cat "$WORKER_PID_FILE")"
+  else
+    echo "polling worker: stopped"
+  fi
+  if is_running "$API_PID_FILE"; then
+    echo "API: running pid=$(cat "$API_PID_FILE")"
+  else
+    echo "API: stopped"
+  fi
+}
+
+case "${1:-start}" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; start ;;
+  status) status ;;
+  *) echo "usage: $0 {start|stop|restart|status}"; exit 2 ;;
+esac
