@@ -17,18 +17,31 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
+# Dependencies belong in the project virtual environment, not in .env.  Keeping
+# the location explicit makes the worker and API use exactly the same packages.
+export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$PROJECT_DIR/.venv}"
+export PYTHONUNBUFFERED=1
+
 mkdir -p logs
 WEB_HOST="${YOUTUBE_WEB_HOST:-0.0.0.0}"
 WEB_PORT="${YOUTUBE_WEB_PORT:-8000}"
 
+# Creates .venv when absent and installs the dependency versions pinned in uv.lock.
 uv sync --frozen
 
+PYTHON_BIN="$UV_PROJECT_ENVIRONMENT/bin/python"
+UVICORN_BIN="$UV_PROJECT_ENVIRONMENT/bin/uvicorn"
+if [[ ! -x "$PYTHON_BIN" || ! -x "$UVICORN_BIN" ]]; then
+  echo "Virtual environment setup failed: expected executables under $UV_PROJECT_ENVIRONMENT" >&2
+  exit 1
+fi
+
 echo "Starting polling worker..."
-uv run python -m youtube_crypto >logs/polling.log 2>&1 &
+"$PYTHON_BIN" -m youtube_crypto >logs/polling.log 2>&1 &
 POLL_PID=$!
 
 echo "Starting API at http://${WEB_HOST}:${WEB_PORT}..."
-uv run uvicorn youtube_crypto.web.app:app --host "$WEB_HOST" --port "$WEB_PORT" \
+"$UVICORN_BIN" youtube_crypto.web.app:app --host "$WEB_HOST" --port "$WEB_PORT" \
   >logs/api.log 2>&1 &
 API_PID=$!
 
