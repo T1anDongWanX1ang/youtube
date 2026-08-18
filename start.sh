@@ -8,7 +8,17 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
 if ! command -v uv >/dev/null 2>&1; then
-  echo "uv is required. Install it first: https://docs.astral.sh/uv/" >&2
+  echo "uv not found; installing it for the current user..."
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "curl is required to install uv automatically. Install curl, then retry." >&2
+    exit 1
+  fi
+  curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv installation completed but uv is not on PATH; open a new shell and retry." >&2
   exit 1
 fi
 
