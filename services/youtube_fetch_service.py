@@ -12,6 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
+_KEY_UNAVAILABLE_REASONS = {
+    "quotaExceeded",
+    "dailyLimitExceeded",
+    "userRateLimitExceeded",
+    "keyInvalid",
+    "ipRefererBlocked",
+    "accessNotConfigured",
+}
 
 
 def _parse_rfc3339(dt_str: str) -> datetime:
@@ -81,17 +89,28 @@ class YouTubeFetchService:
         self._active_key_index = 0
 
     @staticmethod
-    def _is_quota_exhausted(response: requests.Response) -> bool:
-        if response.status_code != 403:
-            return False
+    def _key_unavailable_reason(response: requests.Response) -> Optional[str]:
+        """Return a safe reason when a response is specific to this API key."""
+        if response.status_code not in (400, 401, 403):
+            return None
         try:
-            errors = response.json().get("error", {}).get("errors") or []
+            error = response.json().get("error", {})
+            errors = error.get("errors") or []
         except ValueError:
-            return False
-        return any(error.get("reason") == "quotaExceeded" for error in errors)
+            return None
+
+        for item in errors:
+            reason = str(item.get("reason") or "")
+            if reason in _KEY_UNAVAILABLE_REASONS:
+                return reason
+
+        message = str(error.get("message") or "").lower()
+        if "api key" in message and ("invalid" in message or "not valid" in message):
+            return "keyInvalid"
+        return None
 
     def _get(self, path: str, params: Dict[str, str], timeout: int) -> requests.Response:
-        """GET with key failover only when YouTube reports quota exhaustion."""
+        """GET with failover for quota, rate-limit, and invalid-key responses."""
         last_response: Optional[requests.Response] = None
         key_count = len(self._api_keys)
         for offset in range(key_count):
@@ -99,16 +118,18 @@ class YouTubeFetchService:
             api_key = self._api_keys[key_index]
             request_params = {**params, "key": api_key}
             response = requests.get(f"{YOUTUBE_API_BASE}{path}", params=request_params, timeout=timeout)
-            if not self._is_quota_exhausted(response):
+            unavailable_reason = self._key_unavailable_reason(response)
+            if unavailable_reason is None:
                 self._active_key_index = key_index
                 return response
 
             last_response = response
             if offset < key_count - 1:
                 logger.warning(
-                    "YouTube Data API key %d/%d has exhausted its quota; switching to the next key",
+                    "YouTube Data API key %d/%d is unavailable (%s); switching to the next key",
                     key_index + 1,
                     key_count,
+                    unavailable_reason,
                 )
 
         assert last_response is not None
