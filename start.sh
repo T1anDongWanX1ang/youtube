@@ -43,8 +43,26 @@ uv sync --frozen
 
 PYTHON_BIN="$UV_PROJECT_ENVIRONMENT/bin/python"
 UVICORN_BIN="$UV_PROJECT_ENVIRONMENT/bin/uvicorn"
-if [[ ! -x "$PYTHON_BIN" || ! -x "$UVICORN_BIN" ]]; then
+WORKER_BIN="$UV_PROJECT_ENVIRONMENT/bin/youtube-crypto"
+if [[ ! -x "$PYTHON_BIN" || ! -x "$UVICORN_BIN" || ! -x "$WORKER_BIN" ]]; then
   echo "Virtual environment setup failed: expected executables under $UV_PROJECT_ENVIRONMENT" >&2
+  exit 1
+fi
+
+# Fail before backgrounding services when the deployment has an incomplete
+# database/API/Secret Manager configuration.  The command intentionally never
+# prints a key or connection string.
+if ! "$PYTHON_BIN" -c '
+from youtube_crypto.config.config import YouTubeCryptoSettings
+from pathlib import Path
+settings = YouTubeCryptoSettings.from_env()
+_ = settings.youtube_data_api_keys
+_ = settings.resolved_youtube_gemini_api_key
+if not Path("point_of_view_llm.txt").is_file():
+    raise RuntimeError("point_of_view_llm.txt is missing")
+print("Configuration and Gemini Secret Manager access verified.")
+'; then
+  echo "Startup preflight failed; check .env and Secret Manager credentials." >&2
   exit 1
 fi
 
@@ -83,7 +101,7 @@ stop_process() {
 
 start() {
   start_process "polling worker" "$WORKER_PID_FILE" "logs/polling.log" \
-    "$PYTHON_BIN" -m youtube_crypto
+    "$WORKER_BIN"
   start_process "API" "$API_PID_FILE" "logs/api.log" \
     "$UVICORN_BIN" youtube_crypto.web.app:app --host "$WEB_HOST" --port "$WEB_PORT"
 }

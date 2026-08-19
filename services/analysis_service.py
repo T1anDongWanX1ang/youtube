@@ -1,25 +1,35 @@
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
-from ..config.config import YouTubeCryptoSettings
+from ..config.config import YouTubeCryptoSettings, resolve_gemini_api_key
 from ..models import VideoAnalysis, YouTubeVideo
 from ..utils.gemini_rest import generate_text
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_MAX_OUTPUT_TOKENS = int(os.getenv("YOUTUBE_ANALYSIS_MAX_OUTPUT_TOKENS", "4096"))
+# Flash-Lite occasionally needs more than 8K tokens to complete a structured
+# response despite the prompt's compact-output contract. Keep this configurable,
+# with 16K as the safe default so a complete JSON response is not discarded.
+ANALYSIS_MAX_OUTPUT_TOKENS = int(os.getenv("YOUTUBE_ANALYSIS_MAX_OUTPUT_TOKENS", "16384"))
 ANALYSIS_TRANSCRIPT_CHUNK_CHARS = int(os.getenv("YOUTUBE_ANALYSIS_TRANSCRIPT_CHUNK_CHARS", "4000"))
 CLAIM_ANALYSIS_MAX_CLAIMS_PER_CHUNK = int(os.getenv("YOUTUBE_ANALYSIS_MAX_CLAIMS_PER_CHUNK", "1"))
 CLAIM_TEXT_MAX_CHARS = int(os.getenv("YOUTUBE_ANALYSIS_CLAIM_TEXT_MAX_CHARS", "280"))
 QUOTE_MAX_CHARS = int(os.getenv("YOUTUBE_ANALYSIS_QUOTE_MAX_CHARS", "220"))
 SUMMARY_BRIEF_MAX_CHARS = int(os.getenv("YOUTUBE_ANALYSIS_SUMMARY_BRIEF_MAX_CHARS", "280"))
-SUMMARY_DETAILED_MAX_CHARS = int(os.getenv("YOUTUBE_ANALYSIS_SUMMARY_DETAILED_MAX_CHARS", "800"))
-SUMMARY_FULL_MAX_CHARS = int(os.getenv("YOUTUBE_ANALYSIS_SUMMARY_FULL_MAX_CHARS", "1200"))
+SUMMARY_DETAILED_MAX_CHARS = int(os.getenv("YOUTUBE_ANALYSIS_SUMMARY_DETAILED_MAX_CHARS", "3000"))
+SUMMARY_FULL_MAX_CHARS = int(os.getenv("YOUTUBE_ANALYSIS_SUMMARY_FULL_MAX_CHARS", "6000"))
+SUMMARY_DETAILED_PER_CHUNK_MAX_CHARS = int(
+    os.getenv("YOUTUBE_ANALYSIS_SUMMARY_DETAILED_PER_CHUNK_MAX_CHARS", "1200")
+)
+SUMMARY_FULL_PER_CHUNK_MAX_CHARS = int(
+    os.getenv("YOUTUBE_ANALYSIS_SUMMARY_FULL_PER_CHUNK_MAX_CHARS", "2000")
+)
 ANALYSIS_CHUNK_COOLDOWN_SECONDS = float(os.getenv("YOUTUBE_ANALYSIS_CHUNK_COOLDOWN_SECONDS", "3"))
 
 CLAIM_ANALYSIS_RESPONSE_SCHEMA: dict[str, Any] = {
@@ -236,7 +246,21 @@ def _trim_claims(claims: Any) -> list[dict[str, Any]]:
 
 def _join_limited(parts: Iterable[Any], max_chars: int) -> str:
     text = "\n".join(str(part).strip() for part in parts if str(part or "").strip())
-    return text[:max_chars]
+    if len(text) <= max_chars:
+        return text
+
+    # Do not leave a summary ending half-way through a sentence.  This covers the
+    # usual English and Chinese sentence terminators.  An ellipsis is used only
+    # when an unusually long sentence has no terminator inside the configured cap.
+    prefix = text[:max_chars]
+    boundaries = list(re.finditer(r"[.!?。！？]+(?:[\"'”’）\]\}]+)?", prefix))
+    if boundaries:
+        return prefix[: boundaries[-1].end()].rstrip()
+
+    last_space = prefix.rfind(" ")
+    if last_space > max_chars // 2:
+        return prefix[:last_space].rstrip() + "…"
+    return prefix.rstrip() + "…"
 
 
 def _merge_analysis_payloads(payloads: list[Dict[str, Any]]) -> Dict[str, Any]:
@@ -319,7 +343,7 @@ class VideoAnalysisService:
             prompt = self._build_prompt(video, chunk, index, len(chunks))
             try:
                 full_text, usage = generate_text(
-                    api_key=self.settings.youtube_gemini_api_key,
+                    api_key=resolve_gemini_api_key(self.settings),
                     model=self.settings.gemini_model,
                     prompt=prompt,
                     max_output_tokens=ANALYSIS_MAX_OUTPUT_TOKENS,
@@ -415,7 +439,10 @@ class VideoAnalysisService:
         chunk_contract = (
             f"This is transcript chunk {chunk_index} of {total_chunks}. "
             f"Extract at most {CLAIM_ANALYSIS_MAX_CLAIMS_PER_CHUNK} highest-value claims from this chunk. "
-            f"claim_text <= {CLAIM_TEXT_MAX_CHARS} chars; verbatim_quote <= {QUOTE_MAX_CHARS} chars; summary_brief <= 280 chars; summary_detailed <= 600 chars; summary_full <= 900 chars."
+            f"claim_text <= {CLAIM_TEXT_MAX_CHARS} chars; verbatim_quote <= {QUOTE_MAX_CHARS} chars; "
+            f"summary_brief <= {SUMMARY_BRIEF_MAX_CHARS} chars; "
+            f"summary_detailed <= {SUMMARY_DETAILED_PER_CHUNK_MAX_CHARS} chars; "
+            f"summary_full <= {SUMMARY_FULL_PER_CHUNK_MAX_CHARS} chars."
         )
         return (
             f"{base}\n\n"

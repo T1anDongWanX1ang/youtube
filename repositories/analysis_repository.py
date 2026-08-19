@@ -91,8 +91,18 @@ class VideoAnalysisRepository:
         self.db_pool = db_pool
 
     async def insert_analysis(self, analysis: VideoAnalysis) -> None:
-        """Insert a new analysis row for a video."""
+        """Insert a new analysis row for a video; tolerate a prior successful write.
+
+        The polling process can be interrupted after the analysis row is written but
+        before the video status is marked completed.  Treat that retry as idempotent
+        so the status transition and downstream viewpoint stage can still finish.
+        """
         params = _insert_params(analysis)
         async with self.db_pool.acquire() as conn:
             async with conn.cursor() as cur:
-                await cur.execute(INSERT_SQL, params)
+                try:
+                    await cur.execute(INSERT_SQL, params)
+                except Exception as exc:  # noqa: BLE001 - only duplicate keys are safe
+                    message = str(exc)
+                    if "Duplicate" not in message and "PRIMARY" not in message and "Unique" not in message:
+                        raise

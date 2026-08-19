@@ -4,7 +4,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from ..config.config import VIDEO_DOMAIN_CATEGORIES, YouTubeCryptoSettings, get_prompt_path
+from ..config.config import (
+    VIDEO_DOMAIN_CATEGORIES,
+    YouTubeCryptoSettings,
+    get_prompt_path,
+    resolve_gemini_api_key,
+)
 from ..models import YouTubeVideo
 from ..utils.validation import validate_required_fields
 from ..utils.gemini_rest import generate_from_video
@@ -94,7 +99,7 @@ class VideoDomainRouterService:
         start_time = time.perf_counter()
         try:
             full_text, _usage = generate_from_video(
-                api_key=self.settings.youtube_gemini_api_key,
+                api_key=resolve_gemini_api_key(self.settings),
                 model=self.settings.gemini_model,
                 video_url=youtube_url,
                 prompt=self._prompt,

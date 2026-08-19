@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from ..config.config import YouTubeCryptoSettings
+from ..config.config import YouTubeCryptoSettings, resolve_gemini_api_key
 from ..models import YouTubeVideo
 from ..models.transcript import VideoTranscript
 from ..utils.gemini_rest import generate_from_video
@@ -115,7 +115,7 @@ class TranscriptionService:
 
             try:
                 text, usage = generate_from_video(
-                    api_key=self.settings.youtube_gemini_api_key,
+                    api_key=resolve_gemini_api_key(self.settings),
                     model=model,
                     video_url=video_url,
                     prompt=prompt,

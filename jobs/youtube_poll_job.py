@@ -18,12 +18,14 @@ from ..config.config import (
 from ..repositories import (
     TranscriptRepository,
     VideoAnalysisRepository,
+    ResearchViewpointRepository,
     YouTubeChannelRepository,
     YouTubeVideoRepository,
 )
 from ..services import (
     TranscriptionService,
     VideoAnalysisService,
+    ViewpointExtractionService,
     VideoValueDecision,
     YouTubeFetchService,
     score_video_for_analysis,
@@ -65,6 +67,29 @@ async def _get_db_pool():
     return _get_db_pool._pool  # type: ignore[attr-defined]
 
 
+async def _persist_viewpoints(
+    *,
+    video,
+    analysis,
+    channel_repo: YouTubeChannelRepository,
+    viewpoint_repo: ResearchViewpointRepository,
+    viewpoint_service: ViewpointExtractionService,
+) -> None:
+    """Best-effort opinion extraction after a completed video analysis."""
+    if not analysis.summary_detailed or await viewpoint_repo.has_youtube_viewpoints(video.video_id):
+        return
+    handle, channel_title = await channel_repo.get_channel_identity(video.channel_id)
+    drafts = viewpoint_service.extract(analysis.summary_detailed, video.video_id)
+    viewpoints = viewpoint_repo.build_viewpoints(
+        video=video,
+        channel_handle=handle,
+        channel_title=channel_title,
+        drafts=drafts,
+    )
+    await viewpoint_repo.insert_viewpoints(viewpoints)
+    logger.info("Stored %d viewpoints for video_id=%s", len(viewpoints), video.video_id)
+
+
 async def run_polling_iteration() -> None:
     """
     Single polling iteration:
@@ -78,12 +103,61 @@ async def run_polling_iteration() -> None:
     channel_repo = YouTubeChannelRepository(db_pool)
     video_repo = YouTubeVideoRepository(db_pool)
     analysis_repo = VideoAnalysisRepository(db_pool)
+    viewpoint_repo = ResearchViewpointRepository(db_pool)
     transcript_repo = TranscriptRepository(db_pool)
-    fetch_service = YouTubeFetchService(api_key=settings.youtube_data_api_key)
+    fetch_service = YouTubeFetchService(
+        api_key=settings.youtube_data_api_keys[0],
+        fallback_api_keys=settings.youtube_data_api_keys[1:],
+    )
     analysis_service = VideoAnalysisService(settings=settings)
+    viewpoint_service = ViewpointExtractionService(settings=settings)
     transcription_service = TranscriptionService(settings=settings)
 
     now = datetime.now(timezone.utc)
+
+    # Do not make already-ready results wait for the channel crawl (which can take
+    # several minutes across all configured channels).
+    pending_videos = await video_repo.get_pending_videos(limit=ANALYSIS_BATCH_SIZE)
+    logger.info("Found %d already-ready videos for priority analysis", len(pending_videos))
+    for video in pending_videos:
+        transcript = await transcript_repo.get_transcript(video.video_id)
+        if transcript is None or not transcript.ok:
+            continue
+
+        logger.info("Analyzing already-ready video_id=%s", video.video_id)
+        await video_repo.mark_in_progress(video.video_id)
+        try:
+            analysis = analysis_service.analyze_video(
+                video=video,
+                transcript_text=transcript.full_text,
+                analysis_version=ANALYSIS_VERSION,
+            )
+            if analysis is None:
+                await video_repo.mark_completed(
+                    video_id=video.video_id,
+                    analysis_version=ANALYSIS_VERSION,
+                    completed_at=datetime.now(timezone.utc),
+                )
+                continue
+            await analysis_repo.insert_analysis(analysis)
+            try:
+                await _persist_viewpoints(
+                    video=video,
+                    analysis=analysis,
+                    channel_repo=channel_repo,
+                    viewpoint_repo=viewpoint_repo,
+                    viewpoint_service=viewpoint_service,
+                )
+            except Exception:
+                logger.exception("Viewpoint extraction failed for video_id=%s", video.video_id)
+            await video_repo.mark_completed(
+                video_id=video.video_id,
+                analysis_version=ANALYSIS_VERSION,
+                completed_at=datetime.now(timezone.utc),
+            )
+        except Exception:
+            logger.exception("Priority analysis failed for video_id=%s", video.video_id)
+            await video_repo.mark_failed(video.video_id)
 
     # Phase 1: Discover recent videos for each active channel
     channels = await channel_repo.get_active_channels()
@@ -352,6 +426,16 @@ async def run_polling_iteration() -> None:
                 continue
 
             await analysis_repo.insert_analysis(analysis)
+            try:
+                await _persist_viewpoints(
+                    video=video,
+                    analysis=analysis,
+                    channel_repo=channel_repo,
+                    viewpoint_repo=viewpoint_repo,
+                    viewpoint_service=viewpoint_service,
+                )
+            except Exception:
+                logger.exception("Viewpoint extraction failed for video_id=%s", video.video_id)
             await video_repo.mark_completed(
                 video_id=video.video_id,
                 analysis_version=ANALYSIS_VERSION,

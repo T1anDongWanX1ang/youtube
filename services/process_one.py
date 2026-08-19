@@ -66,7 +66,10 @@ async def _build_real_deps() -> Dict[str, Callable[..., Any]]:
     settings = YouTubeCryptoSettings.from_env()
     pool = await _get_db_pool()
 
-    fetch_service = YouTubeFetchService(api_key=settings.youtube_data_api_key)
+    fetch_service = YouTubeFetchService(
+        api_key=settings.youtube_data_api_keys[0],
+        fallback_api_keys=settings.youtube_data_api_keys[1:],
+    )
     transcription_service = TranscriptionService(settings=settings)
     analysis_service = VideoAnalysisService(settings=settings)
     transcript_repo = TranscriptRepository(pool)

@@ -52,6 +52,22 @@ class YouTubeChannelRepository:
             channels.append(YouTubeChannel(**row_dict))
         return channels
 
+    async def get_channel_identity(self, channel_id: str) -> tuple[Optional[str], Optional[str]]:
+        """Return the publisher handle and display name for downstream records."""
+        sql = """
+            SELECT handle, title
+            FROM youtube_crypto_channels
+            WHERE channel_id = %s
+            LIMIT 1
+        """
+        async with self.db_pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(sql, (channel_id,))
+                row = await cur.fetchone()
+        if not row:
+            return None, None
+        return row.get("handle"), row.get("title")
+
     async def update_channel_id(self, old_channel_id: str, new_channel_id: str) -> None:
         """
         Replace a channel row's primary key channel_id with a new value.

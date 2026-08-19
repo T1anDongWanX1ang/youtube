@@ -137,3 +137,19 @@ def test_analyze_chunks_long_transcripts_and_requests_json_schema(monkeypatch):
     assert all(c["response_schema"]["type"] == "object" for c in calls)
     assert all(len(c["prompt"]) < len(transcript) + 2000 for c in calls)
     assert len(result.claims) == len(calls)
+
+
+def test_join_limited_keeps_a_complete_english_sentence():
+    text = "First complete sentence. Second sentence is deliberately much longer than the limit."
+
+    result = a_mod._join_limited([text], 30)
+
+    assert result == "First complete sentence."
+
+
+def test_join_limited_keeps_a_complete_chinese_sentence():
+    text = "这是第一句完整内容。第二句内容超过设置的截断上限，因此不应写入半句话。"
+
+    result = a_mod._join_limited([text], 12)
+
+    assert result == "这是第一句完整内容。"

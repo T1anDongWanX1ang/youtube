@@ -2,6 +2,7 @@ import json
 from typing import Optional
 
 import aiomysql
+from pymysql.err import OperationalError
 
 from ..models.transcript import VideoTranscript
 
@@ -59,16 +60,32 @@ class TranscriptRepository:
         self.db_pool = db_pool
 
     async def upsert_transcript(self, transcript: VideoTranscript) -> None:
-        """Insert a transcript row; ignore duplicates (one transcript per video_id)."""
+        """Insert a transcript row; ignore duplicates (one transcript per video_id).
+
+        A transcription may take several minutes.  The connection that was idle in
+        the pool meanwhile can have been closed by Doris, so retry once on a fresh
+        connection for the transient MySQL ``server lost`` error.
+        """
         params = _insert_params(transcript)
-        async with self.db_pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                try:
-                    await cur.execute(INSERT_SQL, params)
-                except Exception as e:  # noqa: BLE001 - tolerate duplicate-key only
-                    msg = str(e)
-                    if "Duplicate" not in msg and "PRIMARY" not in msg and "Unique" not in msg:
-                        raise
+        for attempt in range(2):
+            try:
+                async with self.db_pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        try:
+                            await cur.execute(INSERT_SQL, params)
+                            return
+                        except Exception as exc:  # noqa: BLE001 - tolerate duplicate-key only
+                            msg = str(exc)
+                            if "Duplicate" in msg or "PRIMARY" in msg or "Unique" in msg:
+                                return
+                            raise
+            except OperationalError as exc:
+                # 2013 is a dropped connection.  Do not turn a completed Gemini
+                # transcription into a failed attempt merely because its first DB
+                # socket expired.  aiomysql discards closed connections on release.
+                if exc.args and exc.args[0] == 2013 and attempt == 0:
+                    continue
+                raise
 
     async def get_transcript(self, video_id: str) -> Optional[VideoTranscript]:
         sql = """

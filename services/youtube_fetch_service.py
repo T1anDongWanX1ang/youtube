@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import requests
 
@@ -70,6 +70,49 @@ class YouTubeFetchService:
     """
 
     api_key: str
+    fallback_api_keys: Sequence[str] = ()
+
+    def __post_init__(self) -> None:
+        self._api_keys = tuple(
+            key for key in (self.api_key, *self.fallback_api_keys) if key
+        )
+        if not self._api_keys:
+            raise ValueError("At least one YouTube Data API key is required")
+        self._active_key_index = 0
+
+    @staticmethod
+    def _is_quota_exhausted(response: requests.Response) -> bool:
+        if response.status_code != 403:
+            return False
+        try:
+            errors = response.json().get("error", {}).get("errors") or []
+        except ValueError:
+            return False
+        return any(error.get("reason") == "quotaExceeded" for error in errors)
+
+    def _get(self, path: str, params: Dict[str, str], timeout: int) -> requests.Response:
+        """GET with key failover only when YouTube reports quota exhaustion."""
+        last_response: Optional[requests.Response] = None
+        key_count = len(self._api_keys)
+        for offset in range(key_count):
+            key_index = (self._active_key_index + offset) % key_count
+            api_key = self._api_keys[key_index]
+            request_params = {**params, "key": api_key}
+            response = requests.get(f"{YOUTUBE_API_BASE}{path}", params=request_params, timeout=timeout)
+            if not self._is_quota_exhausted(response):
+                self._active_key_index = key_index
+                return response
+
+            last_response = response
+            if offset < key_count - 1:
+                logger.warning(
+                    "YouTube Data API key %d/%d has exhausted its quota; switching to the next key",
+                    key_index + 1,
+                    key_count,
+                )
+
+        assert last_response is not None
+        return last_response
 
     def resolve_channel_id_from_handle(self, handle: str) -> str:
         """
@@ -85,9 +128,8 @@ class YouTubeFetchService:
         params = {
             "part": "id",
             "forHandle": normalized,
-            "key": self.api_key,
         }
-        resp = requests.get(f"{YOUTUBE_API_BASE}/channels", params=params, timeout=10)
+        resp = self._get("/channels", params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
 
@@ -108,9 +150,8 @@ class YouTubeFetchService:
         params = {
             "part": "contentDetails",
             "id": channel_id,
-            "key": self.api_key,
         }
-        resp = requests.get(f"{YOUTUBE_API_BASE}/channels", params=params, timeout=10)
+        resp = self._get("/channels", params, timeout=10)
         try:
             resp.raise_for_status()
         except requests.HTTPError:
@@ -146,9 +187,8 @@ class YouTubeFetchService:
         params = {
             "part": "statistics",
             "id": channel_id,
-            "key": self.api_key,
         }
-        resp = requests.get(f"{YOUTUBE_API_BASE}/channels", params=params, timeout=10)
+        resp = self._get("/channels", params, timeout=10)
         try:
             resp.raise_for_status()
         except requests.HTTPError:
@@ -192,14 +232,11 @@ class YouTubeFetchService:
                 "part": "contentDetails,snippet",
                 "playlistId": uploads_playlist_id,
                 "maxResults": 50,
-                "key": self.api_key,
             }
             if page_token:
                 params["pageToken"] = page_token
 
-            resp = requests.get(
-                f"{YOUTUBE_API_BASE}/playlistItems", params=params, timeout=15
-            )
+            resp = self._get("/playlistItems", params, timeout=15)
             try:
                 resp.raise_for_status()
             except requests.HTTPError:
@@ -257,11 +294,8 @@ class YouTubeFetchService:
             params = {
                 "part": "snippet,contentDetails,statistics",
                 "id": ",".join(batch_ids),
-                "key": self.api_key,
             }
-            resp = requests.get(
-                f"{YOUTUBE_API_BASE}/videos", params=params, timeout=15
-            )
+            resp = self._get("/videos", params, timeout=15)
             try:
                 resp.raise_for_status()
             except requests.HTTPError:
