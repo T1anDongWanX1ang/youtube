@@ -46,6 +46,22 @@ class YouTubeCryptoSettings(BaseSettings):
     db_min_pool_size: int = Field(default=2, alias="DB_MIN_POOL_SIZE")
     db_max_pool_size: int = Field(default=10, alias="DB_MAX_POOL_SIZE")
 
+    # Optional mirror destination.  TP_STRATEGY_* is the preferred spelling;
+    # TRADE_DB_* is retained because it is already used by local deployments.
+    tp_strategy_database_url: Optional[str] = Field(
+        default=None, alias="TP_STRATEGY_DATABASE_URL"
+    )
+    tp_strategy_host: Optional[str] = Field(default=None, alias="TP_STRATEGY_HOST")
+    tp_strategy_port: Optional[int] = Field(default=None, alias="TP_STRATEGY_PORT")
+    tp_strategy_user: Optional[str] = Field(default=None, alias="TP_STRATEGY_USER")
+    tp_strategy_password: Optional[str] = Field(default=None, alias="TP_STRATEGY_PASSWORD")
+    tp_strategy_database: Optional[str] = Field(default=None, alias="TP_STRATEGY_DATABASE")
+    trade_db_host: Optional[str] = Field(default=None, alias="TRADE_DB_HOST")
+    trade_db_port: Optional[int] = Field(default=None, alias="TRADE_DB_PORT")
+    trade_db_user: Optional[str] = Field(default=None, alias="TRADE_DB_USER")
+    trade_db_password: Optional[str] = Field(default=None, alias="TRADE_DB_PASSWORD")
+    trade_db_name: Optional[str] = Field(default=None, alias="TRADE_DB_NAME")
+
     # Claim extraction requires reliable structured JSON. Flash has proven stable
     # for this workload; transcription remains on Flash-Lite below.
     gemini_model: str = Field(default="gemini-2.5-flash", alias="YOUTUBE_GEMINI_MODEL")
@@ -194,6 +210,57 @@ class YouTubeCryptoSettings(BaseSettings):
         )
 
     @property
+    def tp_strategy_enabled(self) -> bool:
+        """Whether a complete TP Strategy mirror connection is configured."""
+        return self._tp_strategy_connection_error is None
+
+    @property
+    def _tp_strategy_connection_error(self) -> str | None:
+        if self.tp_strategy_database_url:
+            return None
+
+        values = self._tp_strategy_connection_values
+        if not any(values.values()):
+            return "not configured"
+        missing = [name for name, value in values.items() if value is None or value == ""]
+        if missing:
+            return f"missing {', '.join(missing)}"
+        return None
+
+    @property
+    def _tp_strategy_connection_values(self) -> dict[str, object | None]:
+        return {
+            "host": self.tp_strategy_host or self.trade_db_host,
+            "port": self.tp_strategy_port or self.trade_db_port,
+            "user": self.tp_strategy_user or self.trade_db_user,
+            "password": self.tp_strategy_password or self.trade_db_password,
+            "database": self.tp_strategy_database or self.trade_db_name,
+        }
+
+    async def create_tp_strategy_db_pool(self) -> aiomysql.Pool:
+        """Create the optional MySQL pool used to mirror data to TP Strategy."""
+        if not self.tp_strategy_enabled:
+            raise ValueError(
+                "TP Strategy mirror connection is invalid: "
+                f"{self._tp_strategy_connection_error}. Set TP_STRATEGY_DATABASE_URL, "
+                "TP_STRATEGY_HOST/PORT/USER/PASSWORD/DATABASE, or TRADE_DB_* variables."
+            )
+        params = self._parsed_tp_strategy_db_url
+        return await aiomysql.create_pool(
+            host=params["host"],
+            port=int(params["port"]),
+            user=params["user"],
+            password=params["password"],
+            db=params["database"],
+            minsize=self.db_min_pool_size,
+            maxsize=self.db_max_pool_size,
+            autocommit=True,
+            charset="utf8mb4",
+            connect_timeout=10,
+            pool_recycle=300,
+        )
+
+    @property
     def _db_host(self) -> str:
         return self._parsed_db_url["host"]
 
@@ -233,6 +300,28 @@ class YouTubeCryptoSettings(BaseSettings):
         from urllib.parse import urlparse
 
         parsed = urlparse(self.database_url)
+        return {
+            "host": parsed.hostname or "localhost",
+            "port": parsed.port or 3306,
+            "user": parsed.username or "",
+            "password": parsed.password or "",
+            "database": (parsed.path or "").lstrip("/"),
+        }
+
+    @property
+    def _parsed_tp_strategy_db_url(self) -> dict[str, object]:
+        if not self.tp_strategy_database_url:
+            return {
+                "host": self._tp_strategy_connection_values["host"] or "localhost",
+                "port": self._tp_strategy_connection_values["port"] or 3306,
+                "user": self._tp_strategy_connection_values["user"] or "",
+                "password": self._tp_strategy_connection_values["password"] or "",
+                "database": self._tp_strategy_connection_values["database"] or "",
+            }
+
+        from urllib.parse import urlparse
+
+        parsed = urlparse(self.tp_strategy_database_url)
         return {
             "host": parsed.hostname or "localhost",
             "port": parsed.port or 3306,

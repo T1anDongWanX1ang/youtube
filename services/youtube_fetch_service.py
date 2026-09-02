@@ -164,6 +164,28 @@ class YouTubeFetchService:
 
         return channel_id
 
+    def get_channel_image_from_handle(self, handle: str) -> str:
+        """Return the preferred YouTube-hosted avatar URL for a channel handle."""
+        if not handle:
+            raise ValueError("Handle is required to fetch a channel image")
+
+        resp = self._get(
+            "/channels",
+            {"part": "snippet", "forHandle": handle.lstrip("@")},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items") or []
+        if not items:
+            raise ValueError(f"No channel found for handle={handle.lstrip('@')}")
+
+        thumbnails = (items[0].get("snippet") or {}).get("thumbnails") or {}
+        for size in ("maxres", "standard", "high", "medium", "default"):
+            image_url = (thumbnails.get(size) or {}).get("url")
+            if image_url:
+                return image_url
+        raise ValueError(f"No channel image found for handle={handle.lstrip('@')}")
+
     def get_uploads_playlist_id(self, channel_id: str) -> str:
         """
         Use channels.list to get the uploads playlist ID for a channel.

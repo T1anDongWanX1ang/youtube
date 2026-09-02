@@ -19,6 +19,7 @@ from ..repositories import (
     TranscriptRepository,
     VideoAnalysisRepository,
     ResearchViewpointRepository,
+    TpStrategyRepository,
     YouTubeChannelRepository,
     YouTubeVideoRepository,
 )
@@ -67,12 +68,23 @@ async def _get_db_pool():
     return _get_db_pool._pool  # type: ignore[attr-defined]
 
 
+async def _get_tp_strategy_db_pool(settings: YouTubeCryptoSettings):
+    """Lazily create the optional pool used for TP Strategy mirroring."""
+    if not settings.tp_strategy_enabled:
+        return None
+    if not hasattr(_get_tp_strategy_db_pool, "_pool"):
+        _get_tp_strategy_db_pool._pool = await settings.create_tp_strategy_db_pool()  # type: ignore[attr-defined]
+        logger.info("TP Strategy mirror DB pool created")
+    return _get_tp_strategy_db_pool._pool  # type: ignore[attr-defined]
+
+
 async def _persist_viewpoints(
     *,
     video,
     analysis,
     channel_repo: YouTubeChannelRepository,
     viewpoint_repo: ResearchViewpointRepository,
+    tp_strategy_repo: TpStrategyRepository | None,
     viewpoint_service: ViewpointExtractionService,
 ) -> None:
     """Best-effort opinion extraction after a completed video analysis."""
@@ -87,6 +99,8 @@ async def _persist_viewpoints(
         drafts=drafts,
     )
     await viewpoint_repo.insert_viewpoints(viewpoints)
+    if tp_strategy_repo is not None:
+        await tp_strategy_repo.upsert_viewpoints(viewpoints)
     logger.info("Stored %d viewpoints for video_id=%s", len(viewpoints), video.video_id)
 
 
@@ -99,12 +113,16 @@ async def run_polling_iteration() -> None:
     """
     settings = YouTubeCryptoSettings.from_env()
     db_pool = await _get_db_pool()
+    tp_strategy_pool = await _get_tp_strategy_db_pool(settings)
 
     channel_repo = YouTubeChannelRepository(db_pool)
     video_repo = YouTubeVideoRepository(db_pool)
     analysis_repo = VideoAnalysisRepository(db_pool)
     viewpoint_repo = ResearchViewpointRepository(db_pool)
     transcript_repo = TranscriptRepository(db_pool)
+    tp_strategy_repo = (
+        TpStrategyRepository(tp_strategy_pool) if tp_strategy_pool is not None else None
+    )
     fetch_service = YouTubeFetchService(
         api_key=settings.youtube_data_api_keys[0],
         fallback_api_keys=settings.youtube_data_api_keys[1:],
@@ -146,6 +164,7 @@ async def run_polling_iteration() -> None:
                     analysis=analysis,
                     channel_repo=channel_repo,
                     viewpoint_repo=viewpoint_repo,
+                    tp_strategy_repo=tp_strategy_repo,
                     viewpoint_service=viewpoint_service,
                 )
             except Exception:
@@ -307,6 +326,15 @@ async def run_polling_iteration() -> None:
             subscriber_count=subscriber_count,
         )
 
+    if tp_strategy_repo is not None:
+        try:
+            channels_for_sync = await channel_repo.get_all_channels_for_sync()
+            await tp_strategy_repo.sync_channels(channels_for_sync)
+            logger.info("Mirrored %d YouTube channels to TP Strategy", len(channels_for_sync))
+        except Exception:
+            # A mirror outage should never stop video collection or analysis.
+            logger.exception("Failed to mirror YouTube channels to TP Strategy")
+
     # Phase 1.5: Transcribe pending videos that do not have a transcript yet.
     # A complete transcript is the source-of-truth the analysis stage reads, so capture it
     # first (and validate coverage inside the service) before any analysis happens.
@@ -432,6 +460,7 @@ async def run_polling_iteration() -> None:
                     analysis=analysis,
                     channel_repo=channel_repo,
                     viewpoint_repo=viewpoint_repo,
+                    tp_strategy_repo=tp_strategy_repo,
                     viewpoint_service=viewpoint_service,
                 )
             except Exception:

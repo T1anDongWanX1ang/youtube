@@ -30,6 +30,7 @@ class YouTubeChannelRepository:
                 is_active,
                 priority,
                 subscriber_count,
+                channel_image,
                 last_checked_at,
                 last_video_published_at,
                 created_at,
@@ -51,6 +52,67 @@ class YouTubeChannelRepository:
                 row_dict["is_active"] = bool(row_dict["is_active"])
             channels.append(YouTubeChannel(**row_dict))
         return channels
+
+    async def get_all_channels_for_sync(self) -> list[dict[str, object]]:
+        """Return the complete channel directory for the TP Strategy mirror."""
+        sql = """
+            SELECT
+                channel_id, handle, title, description, is_active, priority,
+                subscriber_count, channel_image, last_checked_at,
+                last_video_published_at, created_at, updated_at
+            FROM youtube_crypto_channels
+            ORDER BY channel_id ASC
+        """
+        async with self.db_pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(sql)
+                rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_channels_missing_channel_image(
+        self, limit: Optional[int] = None
+    ) -> List[dict[str, str]]:
+        """Return channels with a handle but no stored YouTube avatar URL."""
+        sql = """
+            SELECT channel_id, handle
+            FROM youtube_crypto_channels
+            WHERE handle IS NOT NULL
+              AND LENGTH(TRIM(handle)) > 0
+              AND (channel_image IS NULL OR LENGTH(TRIM(channel_image)) = 0)
+            ORDER BY channel_id ASC
+        """
+        params: tuple[int, ...] = ()
+        if limit is not None:
+            sql += " LIMIT %s"
+            params = (limit,)
+
+        async with self.db_pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(sql, params)
+                rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def update_channel_image(
+        self, channel_id: str, channel_image: str, *, overwrite: bool = False
+    ) -> bool:
+        """Persist an avatar URL, returning whether a row was updated.
+
+        By default the condition preserves an image another process may have
+        written after this job selected the row.
+        """
+        sql = """
+            UPDATE youtube_crypto_channels
+            SET channel_image = %s,
+                updated_at = NOW()
+            WHERE channel_id = %s
+        """
+        if not overwrite:
+            sql += " AND (channel_image IS NULL OR LENGTH(TRIM(channel_image)) = 0)"
+
+        async with self.db_pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(sql, (channel_image, channel_id))
+                return cur.rowcount > 0
 
     async def get_channel_identity(self, channel_id: str) -> tuple[Optional[str], Optional[str]]:
         """Return the publisher handle and display name for downstream records."""
@@ -94,6 +156,7 @@ class YouTubeChannelRepository:
                 is_active,
                 priority,
                 subscriber_count,
+                channel_image,
                 last_checked_at,
                 last_video_published_at,
                 created_at,
@@ -111,11 +174,12 @@ class YouTubeChannelRepository:
                 is_active,
                 priority,
                 subscriber_count,
+                channel_image,
                 last_checked_at,
                 last_video_published_at,
                 created_at,
                 updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         """
         async with self.db_pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -135,6 +199,7 @@ class YouTubeChannelRepository:
                         row["is_active"],
                         row["priority"],
                         row["subscriber_count"],
+                        row["channel_image"],
                         row["last_checked_at"],
                         row["last_video_published_at"],
                         row["created_at"],

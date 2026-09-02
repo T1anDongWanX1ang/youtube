@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from ..config.config import YouTubeCryptoSettings
 from ..models import YouTubeVideo
-from ..repositories import ResearchViewpointRepository
+from ..repositories import ResearchViewpointRepository, TpStrategyRepository
 from ..services import ViewpointExtractionService
 
 logger = logging.getLogger(__name__)
@@ -17,8 +17,14 @@ async def run_viewpoint_backfill(analysis_date: date) -> tuple[int, int]:
     """Process unhandled analyses for one UTC date; returns (videos, viewpoints)."""
     settings = YouTubeCryptoSettings.from_env()
     pool = await settings.create_db_pool()
+    tp_strategy_pool = (
+        await settings.create_tp_strategy_db_pool() if settings.tp_strategy_enabled else None
+    )
     try:
         repository = ResearchViewpointRepository(pool)
+        tp_strategy_repository = (
+            TpStrategyRepository(tp_strategy_pool) if tp_strategy_pool is not None else None
+        )
         extractor = ViewpointExtractionService(settings=settings)
         rows = await repository.get_unprocessed_analyses_for_date(analysis_date)
         viewpoint_count = 0
@@ -38,6 +44,8 @@ async def run_viewpoint_backfill(analysis_date: date) -> tuple[int, int]:
                 drafts=drafts,
             )
             await repository.insert_viewpoints(viewpoints)
+            if tp_strategy_repository is not None:
+                await tp_strategy_repository.upsert_viewpoints(viewpoints)
             viewpoint_count += len(viewpoints)
             logger.info(
                 "Backfilled %d viewpoints for video_id=%s",
@@ -48,6 +56,9 @@ async def run_viewpoint_backfill(analysis_date: date) -> tuple[int, int]:
     finally:
         pool.close()
         await pool.wait_closed()
+        if tp_strategy_pool is not None:
+            tp_strategy_pool.close()
+            await tp_strategy_pool.wait_closed()
 
 
 async def _run_batched_viewpoint_backfill(
@@ -64,11 +75,17 @@ async def _run_batched_viewpoint_backfill(
     """
     settings = YouTubeCryptoSettings.from_env()
     pool = await settings.create_db_pool()
+    tp_strategy_pool = (
+        await settings.create_tp_strategy_db_pool() if settings.tp_strategy_enabled else None
+    )
     videos = viewpoints = failures = 0
     last_created_at: datetime | None = None
     last_video_id: str | None = None
     try:
         repository = ResearchViewpointRepository(pool)
+        tp_strategy_repository = (
+            TpStrategyRepository(tp_strategy_pool) if tp_strategy_pool is not None else None
+        )
         extractor = ViewpointExtractionService(settings=settings)
         while True:
             rows = await repository.get_unprocessed_analyses_batch(
@@ -100,6 +117,8 @@ async def _run_batched_viewpoint_backfill(
                         drafts=drafts,
                     )
                     await repository.insert_viewpoints(items)
+                    if tp_strategy_repository is not None:
+                        await tp_strategy_repository.upsert_viewpoints(items)
                     videos += 1
                     viewpoints += len(items)
                 except Exception:
@@ -116,6 +135,9 @@ async def _run_batched_viewpoint_backfill(
     finally:
         pool.close()
         await pool.wait_closed()
+        if tp_strategy_pool is not None:
+            tp_strategy_pool.close()
+            await tp_strategy_pool.wait_closed()
 
 
 async def run_all_viewpoint_backfill(batch_size: int = 100) -> tuple[int, int, int]:

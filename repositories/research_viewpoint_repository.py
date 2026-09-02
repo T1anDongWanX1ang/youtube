@@ -8,6 +8,7 @@ import aiomysql
 
 from ..models import ResearchViewpoint, YouTubeVideo
 from ..services.viewpoint_extraction_service import ViewpointDraft
+from ..utils.viewpoint_url import build_youtube_viewpoint_url
 
 
 class ResearchViewpointRepository:
@@ -144,7 +145,7 @@ class ResearchViewpointRepository:
         return [
             ResearchViewpoint(
                 source_id=video.video_id,
-                source_url=f"https://www.youtube.com/watch?v={video.video_id}",
+                source_url=build_youtube_viewpoint_url(video.video_id, ordinal),
                 source_author_id=video.channel_id,
                 source_author_handle=publisher[:200],
                 source_author_display_name=display_name[:256],
@@ -158,5 +159,5 @@ class ResearchViewpointRepository:
                     "Extracted from youtube_crypto_video_analyses.summary_detailed."
                 ],
             )
-            for draft in drafts
+            for ordinal, draft in enumerate(drafts, start=1)
         ]

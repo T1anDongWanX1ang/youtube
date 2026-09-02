@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS youtube_crypto_channels (
 
     -- Channel stats (snapshot)
     subscriber_count BIGINT,
+    channel_image TEXT,                      -- YouTube-hosted avatar URL
 
     -- Polling state
     last_checked_at TIMESTAMPTZ,
