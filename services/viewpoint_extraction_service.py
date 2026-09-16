@@ -3,6 +3,7 @@
 import json
 import logging
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -62,11 +63,27 @@ def _text(value: Any, limit: int) -> str:
 class ViewpointExtractionService:
     settings: YouTubeCryptoSettings
 
-    def extract(self, summary_detailed: str, video_id: str) -> list[ViewpointDraft]:
+    def extract(
+        self,
+        summary_detailed: str,
+        video_id: str,
+        *,
+        source_published_at: datetime | date | None = None,
+        video_title: str | None = None,
+    ) -> list[ViewpointDraft]:
         if not summary_detailed or not summary_detailed.strip():
             return []
 
-        prompt = _load_prompt().replace("{{TRANSCRIPT}}", summary_detailed.strip())
+        published_at = (
+            source_published_at.isoformat() if source_published_at is not None else "Unknown"
+        )
+        prompt = (
+            _load_prompt()
+            .replace("{{VIDEO_ID}}", video_id)
+            .replace("{{VIDEO_TITLE}}", (video_title or "Unknown").strip())
+            .replace("{{SOURCE_PUBLISHED_AT}}", published_at)
+            .replace("{{TRANSCRIPT}}", summary_detailed.strip())
+        )
         text, usage = generate_text(
             api_key=resolve_gemini_api_key(self.settings),
             model=self.settings.gemini_model,

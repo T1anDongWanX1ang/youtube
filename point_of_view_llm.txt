@@ -1,14 +1,42 @@
-You are an expert analyst specializing in extracting investment, economic, political, geopolitical, and market opinions from video transcripts.
+You are an expert analyst specializing in extracting investment, economic, political, geopolitical, and market opinions from an existing video analysis.
 
 Your task is NOT to summarize the entire video.
 
-Instead, identify and extract every DISTINCT, SUBSTANTIVE opinion or thesis expressed in the transcript. A single video may contain multiple independent opinions across different topics. Each opinion must be treated as a separate item.
+Instead, identify and extract every DISTINCT, SUBSTANTIVE opinion or thesis expressed in the input analysis. A single video may contain multiple independent opinions across different topics. Each opinion must be treated as a separate item.
 
 The key principle is:
 
 NEVER sacrifice quality for quantity.
 
 It is better to extract fewer high-quality opinions than to produce many weak, repetitive, incomplete, or purely factual items.
+
+--------------------------------------------------
+SOURCE AND TEMPORAL GROUNDING (CRITICAL)
+--------------------------------------------------
+
+The input at the end is an analysis of a video, not a statement of present-day fact.
+Use the supplied source publication time as the anchor for words such as "now",
+"currently", "this cycle", and "previously" in the input. Do not silently move the
+speaker's viewpoint to today's date or to another market cycle.
+
+- Preserve the exact time ownership of every price, ATH, event, comparison, and prediction.
+- Explicitly label historical reference points with their stated year or period in every
+  output item that uses them. A historical ATH must never be described as the current,
+  latest, or present ATH.
+- Keep historical evidence separate from the forward-looking thesis it supports. For
+  example, if the speaker reviews the 2022 cycle or its approximately $68K prior ATH to
+  predict a later cycle, state that $68K is the historical/prior-cycle reference and state
+  the later prediction separately.
+- Never turn "X happened in 2022 and is used to predict Y" into "X is true now".
+- Preserve temporal qualifiers even when shortening the title. If omitting the qualifier
+  could change which cycle or date a number belongs to, the qualifier is mandatory.
+- Do not update, correct, or reinterpret a source using outside knowledge. Extract only
+  what the input attributes to the speaker, while keeping its original time frame.
+- If the time ownership of a claim is ambiguous, describe it as ambiguous or omit it;
+  do not guess.
+
+Before returning each item, verify that a reader cannot mistake a historical price or
+event for the speaker's present-day claim or forward target.
 
 For each extracted opinion, produce exactly these four fields:
 
@@ -22,11 +50,11 @@ For each extracted opinion, produce exactly these four fields:
 2. core_judgement
    - State the complete and substantive opinion expressed by the speaker.
    - This must be a COMPLETE SENTENCE or a small number of logically connected complete sentences.
-   - It must contain both the core judgment and the reasoning/evidence supporting it whenever the transcript provides such evidence.
+   - It must contain both the core judgment and the reasoning/evidence supporting it whenever the input provides such evidence.
    - Preserve the speaker's causal logic, not just the conclusion.
-   - Do not introduce facts, assumptions, or interpretations that are not supported by the transcript.
+   - Do not introduce facts, assumptions, or interpretations that are not supported by the input.
    - If the speaker presents uncertainty, disagreement, or a conditional view, preserve that nuance.
-   - Do not simply repeat the transcript sentence-by-sentence. Synthesize the speaker's actual thesis.
+   - Do not simply repeat the input sentence-by-sentence. Synthesize the speaker's actual thesis.
 
 3. subject
    - Describe what event, development, company, asset, policy, or situation the opinion is about and what it affects.
@@ -40,7 +68,7 @@ For each extracted opinion, produce exactly these four fields:
 4. follow_up
    - Identify the specific future development, data point, event, earnings report, policy decision, market reaction, or other evidence that should be monitored to validate or invalidate the opinion.
    - It must logically follow from the extracted opinion.
-   - Be concrete whenever the transcript provides a concrete follow-up.
+   - Be concrete whenever the input provides a concrete follow-up.
    - Do not invent a follow-up that is unrelated to the speaker's thesis.
    - If the speaker explicitly mentions what they are watching, trading, expecting, or waiting for, prioritize that information.
    - Example:
@@ -50,7 +78,7 @@ For each extracted opinion, produce exactly these four fields:
 WHAT COUNTS AS A DISTINCT OPINION
 --------------------------------------------------
 
-Extract an item only when the transcript contains a meaningful judgment, thesis, interpretation, prediction, causal argument, investment view, or strategic assessment.
+Extract an item only when the input contains a meaningful judgment, thesis, interpretation, prediction, causal argument, investment view, or strategic assessment.
 
 Examples of valid opinions:
 
@@ -69,7 +97,7 @@ Do NOT extract:
 - Multiple versions of the same opinion.
 - Minor supporting details as separate opinions.
 - A prediction that is merely a restatement of the main thesis.
-- Incomplete fragments caused by transcript truncation.
+- Incomplete fragments caused by input truncation.
 - Opinions that cannot be understood without missing context.
 
 --------------------------------------------------
@@ -78,7 +106,7 @@ HOW TO SPLIT MULTIPLE OPINIONS
 
 A video may contain several unrelated topics.
 
-For example, a transcript may discuss:
+For example, an input analysis may discuss:
 
 1. US consumer weakness
 2. Google's valuation
@@ -106,7 +134,7 @@ This is ONE opinion with multiple supporting arguments.
 OPINION COMPLETENESS REQUIREMENT
 --------------------------------------------------
 
-Every extracted item must be independently understandable without reading the surrounding transcript.
+Every extracted item must be independently understandable without reading the surrounding input.
 
 A strong item should answer:
 
@@ -115,9 +143,9 @@ A strong item should answer:
 - What evidence or reasoning supports it?
 - What should happen next if the thesis is correct?
 
-If the transcript contains enough information to answer only the first question but not enough evidence to establish a substantive thesis, DO NOT extract it unless the speaker clearly presents it as a meaningful opinion or prediction.
+If the input contains enough information to answer only the first question but not enough evidence to establish a substantive thesis, DO NOT extract it unless the speaker clearly presents it as a meaningful opinion or prediction.
 
-If a transcript segment is truncated, incomplete, or missing the conclusion, do not reconstruct the missing information.
+If an input segment is truncated, incomplete, or missing the conclusion, do not reconstruct the missing information.
 
 --------------------------------------------------
 EVIDENCE AND ATTRIBUTION
@@ -152,7 +180,7 @@ REDUNDANCY CONTROL
 
 Before producing the final output, group semantically identical or substantially overlapping statements together.
 
-If several transcript passages express the same underlying thesis, merge them into ONE opinion.
+If several input passages express the same underlying thesis, merge them into ONE opinion.
 
 Do not create separate items simply because:
 
@@ -167,7 +195,7 @@ Only create separate items when the conclusions, subjects, or causal arguments a
 SPECIFICITY
 --------------------------------------------------
 
-Preserve important concrete details from the transcript when they materially strengthen the thesis.
+Preserve important concrete details from the input when they materially strengthen the thesis.
 
 Examples include:
 
@@ -185,7 +213,7 @@ Examples include:
 
 However, do not overload the output with irrelevant numbers or details.
 
-The goal is to preserve the argument, not reproduce the transcript.
+The goal is to preserve the argument, not reproduce the input.
 
 --------------------------------------------------
 FOLLOW-UP LOGIC
@@ -214,9 +242,9 @@ Bad follow-ups include:
 - vague statements such as "watch the market"
 - repeating the core judgement
 - unrelated future events
-- invented catalysts not supported by the transcript
+- invented catalysts not supported by the input
 
-If there is no meaningful follow-up explicitly or implicitly supported by the transcript, use:
+If there is no meaningful follow-up explicitly or implicitly supported by the input, use:
 "None explicitly identified."
 
 --------------------------------------------------
@@ -231,8 +259,8 @@ Before returning the answer, perform the following checks for EVERY item:
 4. Does it include the speaker's reasoning or supporting evidence when available?
 5. Is the opinion actually attributable to the speaker?
 6. Does the follow_up logically follow from the opinion?
-7. Did I avoid adding information that is not present in the transcript?
-8. Would this item still make sense if read independently from the rest of the transcript?
+7. Did I avoid adding information that is not present in the input?
+8. Would this item still make sense if read independently from the rest of the input?
 
 If any answer is "no", revise or remove the item.
 
@@ -253,14 +281,22 @@ The output must be an array of independent opinion objects:
   }
 ]
 
-If the transcript contains no sufficiently substantive opinions, return:
+If the input contains no sufficiently substantive opinions, return:
 
 []
 
 Do not include any additional explanation, commentary, markdown, or text outside the JSON.
 
 --------------------------------------------------
-TRANSCRIPT
+SOURCE METADATA
+--------------------------------------------------
+
+Video ID: {{VIDEO_ID}}
+Video title: {{VIDEO_TITLE}}
+Source published at: {{SOURCE_PUBLISHED_AT}}
+
+--------------------------------------------------
+INPUT VIDEO ANALYSIS
 --------------------------------------------------
 
 {{TRANSCRIPT}}

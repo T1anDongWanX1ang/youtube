@@ -16,18 +16,18 @@ from ..config.config import (
     YouTubeCryptoSettings,
 )
 from ..repositories import (
-    TranscriptRepository,
-    VideoAnalysisRepository,
     ResearchViewpointRepository,
     TpStrategyRepository,
+    TranscriptRepository,
+    VideoAnalysisRepository,
     YouTubeChannelRepository,
     YouTubeVideoRepository,
 )
 from ..services import (
     TranscriptionService,
     VideoAnalysisService,
-    ViewpointExtractionService,
     VideoValueDecision,
+    ViewpointExtractionService,
     YouTubeFetchService,
     score_video_for_analysis,
     select_videos_for_analysis,
@@ -91,7 +91,12 @@ async def _persist_viewpoints(
     if not analysis.summary_detailed or await viewpoint_repo.has_youtube_viewpoints(video.video_id):
         return
     handle, channel_title = await channel_repo.get_channel_identity(video.channel_id)
-    drafts = viewpoint_service.extract(analysis.summary_detailed, video.video_id)
+    drafts = viewpoint_service.extract(
+        analysis.summary_detailed,
+        video.video_id,
+        source_published_at=video.published_at,
+        video_title=video.title,
+    )
     viewpoints = viewpoint_repo.build_viewpoints(
         video=video,
         channel_handle=handle,

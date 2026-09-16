@@ -36,7 +36,12 @@ async def run_viewpoint_backfill(analysis_date: date) -> tuple[int, int]:
                 title=row["title"],
                 published_at=row["published_at"],
             )
-            drafts = extractor.extract(row["summary_detailed"], video.video_id)
+            drafts = extractor.extract(
+                row["summary_detailed"],
+                video.video_id,
+                source_published_at=video.published_at,
+                video_title=video.title,
+            )
             viewpoints = repository.build_viewpoints(
                 video=video,
                 channel_handle=row.get("handle"),
@@ -109,7 +114,12 @@ async def _run_batched_viewpoint_backfill(
                     published_at=row["published_at"],
                 )
                 try:
-                    drafts = extractor.extract(row["summary_detailed"], video.video_id)
+                    drafts = extractor.extract(
+                        row["summary_detailed"],
+                        video.video_id,
+                        source_published_at=video.published_at,
+                        video_title=video.title,
+                    )
                     items = repository.build_viewpoints(
                         video=video,
                         channel_handle=row.get("handle"),
