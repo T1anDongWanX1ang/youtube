@@ -1,7 +1,6 @@
 import json
 
 import pytest
-
 import youtube_crypto.utils.gemini_rest as g_mod
 
 
@@ -52,8 +51,10 @@ def test_stream_request_fails_fast_when_output_is_truncated(monkeypatch):
 
     monkeypatch.setattr(g_mod.requests, "post", fake_post)
 
-    with pytest.raises(RuntimeError, match="MAX_TOKENS"):
+    with pytest.raises(g_mod.GeminiOutputTruncatedError, match="MAX_TOKENS") as error:
         g_mod.generate_text(api_key="k", model="m", prompt="p")
+    assert error.value.partial_text == '{\\"claims\\": ['
+    assert error.value.usage is None
 
 
 def test_video_stream_returns_partial_text_when_output_hits_token_limit(monkeypatch):

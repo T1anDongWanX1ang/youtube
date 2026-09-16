@@ -4,12 +4,36 @@ from datetime import datetime, timezone
 import youtube_crypto.services.analysis_service as a_mod
 from youtube_crypto.models import YouTubeVideo
 from youtube_crypto.services.analysis_service import VideoAnalysisService
+from youtube_crypto.utils.gemini_rest import GeminiOutputTruncatedError
 
 
 class _Settings:
     youtube_gemini_api_key = "k"
     gemini_model = "gemini-3-pro-preview"
     transcription_model = "gemini-2.5-flash"
+
+
+def _chunk_payload(label: str) -> str:
+    return json.dumps(
+        {
+            "speaker": "Analyst",
+            "category": "market",
+            "is_substantive": True,
+            "overall_thesis": label,
+            "sentiment": "neutral",
+            "assets": [],
+            "key_tokens": [],
+            "narratives": [],
+            "key_narratives": [],
+            "events_referenced": [],
+            "summary_brief": label,
+            "summary_detailed": label,
+            "summary_full": label,
+            "claims": [],
+            "catalysts_mentioned": [],
+            "risks_mentioned": [],
+        }
+    )
 
 
 def _video():
@@ -137,6 +161,57 @@ def test_analyze_chunks_long_transcripts_and_requests_json_schema(monkeypatch):
     assert all(c["response_schema"]["type"] == "object" for c in calls)
     assert all(len(c["prompt"]) < len(transcript) + 2000 for c in calls)
     assert len(result.claims) == len(calls)
+
+
+def test_analyze_splits_only_a_truncated_chunk_and_keeps_prior_results(monkeypatch):
+    monkeypatch.setattr(a_mod, "ANALYSIS_TRANSCRIPT_CHUNK_CHARS", 80, raising=False)
+    monkeypatch.setattr(a_mod, "ANALYSIS_MIN_RETRY_CHUNK_CHARS", 10, raising=False)
+    monkeypatch.setattr(a_mod, "ANALYSIS_MAX_SPLIT_DEPTH", 2, raising=False)
+    monkeypatch.setattr(a_mod, "ANALYSIS_CHUNK_COOLDOWN_SECONDS", 0, raising=False)
+    monkeypatch.setattr(
+        a_mod,
+        "_chunk_transcript",
+        lambda _text, _max_chars: ["first original", "second original"],
+    )
+    monkeypatch.setattr(
+        a_mod,
+        "_split_truncated_chunk",
+        lambda _chunk: ["second half one", "second half two"],
+    )
+    calls = []
+
+    def fake_generate_text(**kw):
+        calls.append(kw)
+        if len(calls) == 2:
+            raise GeminiOutputTruncatedError('{"claims": [', {"totalTokenCount": 18824})
+        return _chunk_payload(f"response {len(calls)}"), {"totalTokenCount": 10}
+
+    monkeypatch.setattr(a_mod, "generate_text", fake_generate_text)
+    result = VideoAnalysisService(settings=_Settings()).analyze_video(
+        _video(), "transcript", "v2"
+    )
+
+    assert result is not None
+    assert len(calls) == 4  # first chunk, failed second chunk, then its two halves
+    assert result.raw_response["chunk_count"] == 3
+    assert result.summary_detailed == "response 1\nresponse 3\nresponse 4"
+
+
+def test_analyze_accepts_complete_json_emitted_before_max_tokens(monkeypatch):
+    monkeypatch.setattr(a_mod, "ANALYSIS_TRANSCRIPT_CHUNK_CHARS", 4000, raising=False)
+    monkeypatch.setattr(a_mod, "ANALYSIS_CHUNK_COOLDOWN_SECONDS", 0, raising=False)
+
+    def fake_generate_text(**_kw):
+        raise GeminiOutputTruncatedError(
+            _chunk_payload("complete despite finish reason"),
+            {"totalTokenCount": 18824},
+        )
+
+    monkeypatch.setattr(a_mod, "generate_text", fake_generate_text)
+    result = VideoAnalysisService(settings=_Settings()).analyze_video(
+        _video(), "[00:00] claim", "v2"
+    )
+    assert result is not None
 
 
 def test_join_limited_keeps_a_complete_english_sentence():

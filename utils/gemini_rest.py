@@ -25,6 +25,18 @@ _RETRYABLE = (429, 500, 503)
 _DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"
 
 
+class GeminiOutputTruncatedError(RuntimeError):
+    """Gemini stopped at its output limit before confirming a complete response."""
+
+    def __init__(self, partial_text: str, usage: Optional[dict]):
+        self.partial_text = partial_text
+        self.usage = usage
+        total = usage.get("totalTokenCount") if usage else None
+        super().__init__(
+            f"Gemini output truncated: finishReason=MAX_TOKENS total_tokens={total}"
+        )
+
+
 def _endpoint(model: str, key: str, base_url: Optional[str] = None) -> str:
     base = (base_url or os.getenv("YOUTUBE_GEMINI_BASE_URL") or _DEFAULT_BASE_URL).rstrip("/")
     return f"{base}/v1beta/models/{model}:streamGenerateContent?alt=sse&key={key}"
@@ -85,8 +97,7 @@ def _stream_request(
                 usage = dict(usage or {})
                 usage["finishReason"] = "MAX_TOKENS"
                 return "".join(text_parts), usage
-            total = usage.get("totalTokenCount") if usage else None
-            raise RuntimeError(f"Gemini output truncated: finishReason=MAX_TOKENS total_tokens={total}")
+            raise GeminiOutputTruncatedError("".join(text_parts), usage)
         if not finish_reasons:
             wait = 20 * (attempt + 1)
             message = "Gemini stream ended without finishReason; treating response as incomplete"
@@ -136,8 +147,7 @@ def _generate_request(url: str, body: dict, max_retries: int, timeout: tuple) ->
 
         usage = payload.get("usageMetadata")
         if "MAX_TOKENS" in finish_reasons:
-            total = usage.get("totalTokenCount") if usage else None
-            raise RuntimeError(f"Gemini output truncated: finishReason=MAX_TOKENS total_tokens={total}")
+            raise GeminiOutputTruncatedError("".join(text_parts), usage)
         if not finish_reasons:
             raise RuntimeError("Gemini response missing finishReason; treating response as incomplete")
         bad_finish = [reason for reason in finish_reasons if reason != "STOP"]

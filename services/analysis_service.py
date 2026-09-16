@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, Optional
 
 from ..config.config import YouTubeCryptoSettings, resolve_gemini_api_key
 from ..models import VideoAnalysis, YouTubeVideo
-from ..utils.gemini_rest import generate_text
+from ..utils.gemini_rest import GeminiOutputTruncatedError, generate_text
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,10 @@ SUMMARY_FULL_PER_CHUNK_MAX_CHARS = int(
     os.getenv("YOUTUBE_ANALYSIS_SUMMARY_FULL_PER_CHUNK_MAX_CHARS", "2000")
 )
 ANALYSIS_CHUNK_COOLDOWN_SECONDS = float(os.getenv("YOUTUBE_ANALYSIS_CHUNK_COOLDOWN_SECONDS", "3"))
+ANALYSIS_MAX_SPLIT_DEPTH = int(os.getenv("YOUTUBE_ANALYSIS_MAX_SPLIT_DEPTH", "3"))
+ANALYSIS_MIN_RETRY_CHUNK_CHARS = int(
+    os.getenv("YOUTUBE_ANALYSIS_MIN_RETRY_CHUNK_CHARS", "500")
+)
 
 CLAIM_ANALYSIS_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -228,6 +232,19 @@ def _chunk_transcript(transcript_text: str, max_chars: int) -> list[str]:
     return [chunk for chunk in chunks if chunk]
 
 
+def _split_truncated_chunk(chunk: str) -> list[str]:
+    """Split only a failed chunk while keeping useful transcript line boundaries."""
+    if len(chunk) <= 1:
+        return [chunk]
+    target_chars = max(ANALYSIS_MIN_RETRY_CHUNK_CHARS, len(chunk) // 2)
+    parts = _chunk_transcript(chunk, target_chars)
+    if len(parts) > 1:
+        return parts
+
+    midpoint = len(chunk) // 2
+    return [part.strip() for part in (chunk[:midpoint], chunk[midpoint:]) if part.strip()]
+
+
 def _trim_claims(claims: Any) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for claim in claims or []:
@@ -339,8 +356,12 @@ class VideoAnalysisService:
         payloads: list[Dict[str, Any]] = []
         prompt_tokens = cand_tokens = total_tokens = cached_tokens = 0
 
-        for index, chunk in enumerate(chunks, start=1):
-            prompt = self._build_prompt(video, chunk, index, len(chunks))
+        work_items: list[tuple[str, str, int]] = [
+            (chunk, str(index), 0) for index, chunk in enumerate(chunks, start=1)
+        ]
+        while work_items:
+            chunk, chunk_label, split_depth = work_items.pop(0)
+            prompt = self._build_prompt(video, chunk, chunk_label, len(chunks))
             try:
                 full_text, usage = generate_text(
                     api_key=resolve_gemini_api_key(self.settings),
@@ -352,11 +373,63 @@ class VideoAnalysisService:
                     response_mime_type="application/json",
                     response_schema=CLAIM_ANALYSIS_RESPONSE_SCHEMA,
                 )
+            except GeminiOutputTruncatedError as exc:
+                # A provider can occasionally report MAX_TOKENS after emitting one
+                # complete object. Accept that object; otherwise retry only this
+                # chunk at a smaller size instead of discarding prior chunk work.
+                try:
+                    chunk_payload = json.loads(_extract_first_json_object(exc.partial_text))
+                except json.JSONDecodeError:
+                    if (
+                        split_depth >= ANALYSIS_MAX_SPLIT_DEPTH
+                        or len(chunk) <= ANALYSIS_MIN_RETRY_CHUNK_CHARS
+                    ):
+                        logger.exception(
+                            "Gemini analysis output remained truncated at minimum chunk "
+                            "video_id=%s chunk=%s/%s chars=%s depth=%s",
+                            video.video_id,
+                            chunk_label,
+                            len(chunks),
+                            len(chunk),
+                            split_depth,
+                        )
+                        raise exc
+
+                    parts = _split_truncated_chunk(chunk)
+                    if len(parts) < 2:
+                        raise exc
+                    logger.warning(
+                        "Gemini analysis output truncated; splitting failed chunk "
+                        "video_id=%s chunk=%s/%s chars=%s into=%s depth=%s",
+                        video.video_id,
+                        chunk_label,
+                        len(chunks),
+                        len(chunk),
+                        len(parts),
+                        split_depth + 1,
+                    )
+                    work_items[0:0] = [
+                        (part, f"{chunk_label}.{part_index}", split_depth + 1)
+                        for part_index, part in enumerate(parts, start=1)
+                    ]
+                    if ANALYSIS_CHUNK_COOLDOWN_SECONDS > 0:
+                        time.sleep(ANALYSIS_CHUNK_COOLDOWN_SECONDS)
+                    continue
+                else:
+                    full_text = exc.partial_text
+                    usage = exc.usage
+                    logger.warning(
+                        "Gemini reported MAX_TOKENS after a complete JSON object; "
+                        "accepting response video_id=%s chunk=%s/%s",
+                        video.video_id,
+                        chunk_label,
+                        len(chunks),
+                    )
             except Exception:
                 logger.exception(
                     "Error while calling Gemini for analysis video_id=%s chunk=%s/%s",
                     video.video_id,
-                    index,
+                    chunk_label,
                     len(chunks),
                 )
                 raise
@@ -367,7 +440,7 @@ class VideoAnalysisService:
                 logger.info(
                     "analysis_chunk_done video_id=%s chunk=%s/%s claims=%s tokens=%s",
                     video.video_id,
-                    index,
+                    chunk_label,
                     len(chunks),
                     len(chunk_payload.get("claims") or []),
                     usage.get("totalTokenCount") if usage else None,
@@ -376,7 +449,7 @@ class VideoAnalysisService:
                 logger.exception(
                     "Failed to parse analysis JSON for video_id=%s chunk=%s/%s. Text (truncated): %s",
                     video.video_id,
-                    index,
+                    chunk_label,
                     len(chunks),
                     full_text[:2000],
                 )
@@ -388,7 +461,7 @@ class VideoAnalysisService:
                 total_tokens += usage.get("totalTokenCount") or 0
                 cached_tokens += usage.get("cachedContentTokenCount") or 0
 
-            if index < len(chunks) and ANALYSIS_CHUNK_COOLDOWN_SECONDS > 0:
+            if work_items and ANALYSIS_CHUNK_COOLDOWN_SECONDS > 0:
                 time.sleep(ANALYSIS_CHUNK_COOLDOWN_SECONDS)
 
         elapsed_seconds = time.perf_counter() - start_time
@@ -431,7 +504,13 @@ class VideoAnalysisService:
             elapsed_seconds=elapsed_seconds,
         )
 
-    def _build_prompt(self, video: YouTubeVideo, transcript_text: str, chunk_index: int, total_chunks: int) -> str:
+    def _build_prompt(
+        self,
+        video: YouTubeVideo,
+        transcript_text: str,
+        chunk_index: int | str,
+        total_chunks: int,
+    ) -> str:
         base = _load_prompt()
         metadata = f"Video title: {video.title}\nChannel id: {video.channel_id}\n"
         if video.description:
